@@ -1,0 +1,27 @@
+name: News Digest
+
+on:
+  schedule:
+    # cron is UTC. 22:00 UTC = 07:00 KST, 08:00 UTC = 17:00 KST
+    - cron: "0 22 * * *"
+    - cron: "0 8 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run digest
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+        run: python news_digest.py
