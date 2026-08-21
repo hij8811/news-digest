@@ -250,17 +250,18 @@ def send_kakao(token: str, title: str, description: str, image_url: str, page_ur
 
 def send_email(subject: str, html_body: str) -> None:
     sender = os.environ["GMAIL_ADDRESS"]
-    recipient = os.environ.get("DIGEST_RECIPIENT", sender)
+    # comma-separated so more recipients can be added later without a code change
+    recipients = [r.strip() for r in os.environ.get("DIGEST_RECIPIENT", sender).split(",") if r.strip()]
 
     msg = MIMEText(html_body, "html", "utf-8")
     msg["Subject"] = subject
     msg["From"] = sender
-    msg["To"] = recipient
+    msg["To"] = ", ".join(recipients)
 
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.starttls()
         server.login(sender, os.environ["GMAIL_APP_PASSWORD"])
-        server.sendmail(sender, [recipient], msg.as_string())
+        server.sendmail(sender, recipients, msg.as_string())
 
 
 def main() -> None:
