@@ -1,15 +1,18 @@
 """Fetch Korea (Newsis) + Japan (NHK) headlines, rank them with Gemini, publish a digest
-page to GitHub Pages, and send a KakaoTalk "memo to self" teaser linking to it.
+page to GitHub Pages, and send it as a KakaoTalk "memo to self" teaser + a full email.
 
 Run twice a day via GitHub Actions (see .github/workflows/news-digest.yml).
 Requires env vars: GEMINI_API_KEY, KAKAO_CLIENT_ID, KAKAO_CLIENT_SECRET,
-KAKAO_REFRESH_TOKEN, PAGE_BASE_URL
+KAKAO_REFRESH_TOKEN, PAGE_BASE_URL, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
+Optional: DIGEST_RECIPIENT (defaults to GMAIL_ADDRESS)
 """
 import html
 import json
 import os
+import smtplib
 import sys
 from datetime import datetime
+from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
 import feedparser
@@ -245,6 +248,21 @@ def send_kakao(token: str, title: str, description: str, image_url: str, page_ur
     resp.raise_for_status()
 
 
+def send_email(subject: str, html_body: str) -> None:
+    sender = os.environ["GMAIL_ADDRESS"]
+    recipient = os.environ.get("DIGEST_RECIPIENT", sender)
+
+    msg = MIMEText(html_body, "html", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = recipient
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(sender, os.environ["GMAIL_APP_PASSWORD"])
+        server.sendmail(sender, [recipient], msg.as_string())
+
+
 def main() -> None:
     now = datetime.now(KST)
     time_slot = "아침" if now.hour < 12 else "저녁"
@@ -258,9 +276,10 @@ def main() -> None:
 
     print(render_digest(data))
 
+    html_page = render_html(data)
     os.makedirs("docs", exist_ok=True)
     with open("docs/index.html", "w", encoding="utf-8") as f:
-        f.write(render_html(data))
+        f.write(html_page)
 
     counts = count_importance(data)
     base_url = os.environ["PAGE_BASE_URL"].rstrip("/") + "/"
@@ -272,6 +291,7 @@ def main() -> None:
 
     kakao_token = get_kakao_access_token()
     send_kakao(kakao_token, f"📰 {time_slot} 뉴스 요약 · {date_str}", description, image_url, page_url)
+    send_email(f"📰 {time_slot} 뉴스 요약 · {date_str}", html_page)
 
 
 if __name__ == "__main__":
