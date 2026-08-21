@@ -2,7 +2,8 @@
 page to GitHub Pages, and send a KakaoTalk "memo to self" teaser linking to it.
 
 Run twice a day via GitHub Actions (see .github/workflows/news-digest.yml).
-Requires env vars: GEMINI_API_KEY, KAKAO_ACCESS_TOKEN, PAGE_BASE_URL
+Requires env vars: GEMINI_API_KEY, KAKAO_CLIENT_ID, KAKAO_CLIENT_SECRET,
+KAKAO_REFRESH_TOKEN, PAGE_BASE_URL
 """
 import html
 import json
@@ -184,8 +185,25 @@ li {{ padding: 8px 0; border-bottom: 1px solid #f0f0f0; }}
 </body></html>"""
 
 
-def send_kakao(title: str, description: str, page_url: str) -> None:
-    token = os.environ["KAKAO_ACCESS_TOKEN"]
+def get_kakao_access_token() -> str:
+    # Kakao access tokens only last ~6h, so mint a fresh one each run from the
+    # long-lived (~60 day) refresh token instead of storing a static token.
+    resp = requests.post(
+        "https://kauth.kakao.com/oauth/token",
+        headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
+        data={
+            "grant_type": "refresh_token",
+            "client_id": os.environ["KAKAO_CLIENT_ID"],
+            "client_secret": os.environ["KAKAO_CLIENT_SECRET"],
+            "refresh_token": os.environ["KAKAO_REFRESH_TOKEN"],
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+def send_kakao(token: str, title: str, description: str, page_url: str) -> None:
     template_object = {
         "object_type": "feed",
         "content": {
@@ -226,7 +244,9 @@ def main() -> None:
     counts = count_importance(data)
     page_url = os.environ["PAGE_BASE_URL"].rstrip("/") + "/"
     teaser = f"🔴 주요 {counts['red']}건 · 🟠 중요 {counts['orange']}건 · ⚪ 일반 {counts['white']}건 도착"
-    send_kakao(f"📰 {time_slot} 뉴스 요약 · {date_str}", teaser, page_url)
+
+    kakao_token = get_kakao_access_token()
+    send_kakao(kakao_token, f"📰 {time_slot} 뉴스 요약 · {date_str}", teaser, page_url)
 
 
 if __name__ == "__main__":
