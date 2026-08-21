@@ -85,7 +85,7 @@ def build_prompt(korea: dict, japan: dict, time_slot: str, date_str: str) -> str
 def call_gemini(prompt: str) -> dict:
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-3.6-flash",
         contents=prompt,
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
