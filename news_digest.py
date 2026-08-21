@@ -251,7 +251,8 @@ def send_kakao(token: str, title: str, description: str, image_url: str, page_ur
 def send_email(subject: str, html_body: str) -> None:
     sender = os.environ["GMAIL_ADDRESS"]
     # comma-separated so more recipients can be added later without a code change
-    recipients = [r.strip() for r in os.environ.get("DIGEST_RECIPIENT", sender).split(",") if r.strip()]
+    recipient_env = os.environ.get("DIGEST_RECIPIENT") or sender
+    recipients = [r.strip() for r in recipient_env.split(",") if r.strip()]
 
     msg = MIMEText(html_body, "html", "utf-8")
     msg["Subject"] = subject
