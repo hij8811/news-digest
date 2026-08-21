@@ -1,8 +1,10 @@
-"""Fetch Korea (Newsis) + Japan (NHK) headlines, rank them with Gemini, and push a formatted digest to LINE.
+"""Fetch Korea (Newsis) + Japan (NHK) headlines, rank them with Gemini, publish a digest
+page to GitHub Pages, and send a KakaoTalk "memo to self" teaser linking to it.
 
 Run twice a day via GitHub Actions (see .github/workflows/news-digest.yml).
-Requires env vars: GEMINI_API_KEY, LINE_CHANNEL_ACCESS_TOKEN
+Requires env vars: GEMINI_API_KEY, KAKAO_ACCESS_TOKEN, PAGE_BASE_URL
 """
+import html
 import json
 import os
 import sys
@@ -30,7 +32,6 @@ JAPAN_FEEDS = {
     "국제": "https://www.nhk.or.jp/rss/news/cat6.xml",
 }
 ITEMS_PER_CATEGORY = 6
-LINE_MAX_CHARS = 4900  # leave headroom under LINE's 5000-char text limit
 
 
 def fetch_items(feed_url: str, limit: int) -> list[dict]:
@@ -124,32 +125,82 @@ def render_digest(data: dict) -> str:
     return "\n".join(parts).strip()
 
 
-def chunk_text(text: str, max_chars: int) -> list[str]:
-    if len(text) <= max_chars:
-        return [text]
-    chunks = []
-    remaining = text
-    while len(remaining) > max_chars:
-        split_at = remaining.rfind("\n\n", 0, max_chars)
-        if split_at == -1:
-            split_at = max_chars
-        chunks.append(remaining[:split_at].strip())
-        remaining = remaining[split_at:].strip()
-    if remaining:
-        chunks.append(remaining)
-    return chunks
+def count_importance(data: dict) -> dict:
+    counts = {"red": 0, "orange": 0, "white": 0}
+    for source in (data.get("korea", {}), data.get("japan", {})):
+        for items in source.values():
+            for item in items:
+                counts[item.get("importance", "white")] = counts.get(item.get("importance", "white"), 0) + 1
+    return counts
 
 
-def send_to_line(text: str) -> None:
-    token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-    messages = [{"type": "text", "text": chunk} for chunk in chunk_text(text, LINE_MAX_CHARS)][:5]
-    resp = requests.post(
-        "https://api.line.me/v2/bot/message/broadcast",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
+def render_html_category(name: str, items: list[dict]) -> str:
+    rows = []
+    for item in items:
+        icon = ICONS.get(item.get("importance"), "⚪")
+        headline = html.escape(item.get("headline", "").strip())
+        link = html.escape(item.get("link", ""), quote=True)
+        context_html = ""
+        if item.get("importance") == "red" and item.get("context"):
+            context_html = f'<div class="context">→ {html.escape(item["context"].strip())}</div>'
+        rows.append(
+            f'<li><div class="headline">{icon} '
+            f'<a href="{link}" target="_blank" rel="noopener">{headline}</a></div>{context_html}</li>'
+        )
+    return f'<h3>{html.escape(name)}</h3><ul>{"".join(rows)}</ul>'
+
+
+def render_html(data: dict) -> str:
+    counts = count_importance(data)
+    sections = []
+    for label, source_key in (("🇰🇷 한국 (뉴시스)", "korea"), ("🇯🇵 일본 (NHK)", "japan")):
+        cats_html = "".join(
+            render_html_category(cat, data.get(source_key, {}).get(cat, []))
+            for cat in ["정치", "경제", "사회", "국제"]
+            if data.get(source_key, {}).get(cat)
+        )
+        sections.append(f'<section><h2>{label}</h2>{cats_html}</section>')
+
+    return f"""<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>{html.escape(data['time_slot'])} 뉴스 요약 · {html.escape(data['date'])}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{ font-family: -apple-system, "Malgun Gothic", sans-serif; max-width: 640px; margin: 0 auto; padding: 20px 16px 60px; line-height: 1.5; color: #1a1a1a; background: #fff; }}
+h1 {{ font-size: 1.3rem; }}
+h2 {{ font-size: 1.1rem; margin-top: 2rem; border-bottom: 2px solid #eee; padding-bottom: 6px; }}
+h3 {{ font-size: 1rem; color: #444; margin-bottom: 4px; }}
+ul {{ list-style: none; padding: 0; margin: 0 0 1.2rem; }}
+li {{ padding: 8px 0; border-bottom: 1px solid #f0f0f0; }}
+.headline a {{ color: #1a1a1a; text-decoration: none; }}
+.headline a:hover {{ text-decoration: underline; }}
+.context {{ color: #666; font-size: 0.9rem; margin-top: 2px; padding-left: 1.4rem; }}
+.summary {{ color: #666; font-size: 0.95rem; }}
+</style></head>
+<body>
+<h1>📰 {html.escape(data['time_slot'])} 뉴스 요약 · {html.escape(data['date'])}</h1>
+<p class="summary">🔴 주요 {counts['red']}건 · 🟠 중요 {counts['orange']}건 · ⚪ 일반 {counts['white']}건</p>
+{"".join(sections)}
+</body></html>"""
+
+
+def send_kakao(title: str, description: str, page_url: str) -> None:
+    token = os.environ["KAKAO_ACCESS_TOKEN"]
+    template_object = {
+        "object_type": "feed",
+        "content": {
+            "title": title,
+            "description": description,
+            "link": {"web_url": page_url, "mobile_web_url": page_url},
         },
-        json={"messages": messages},
+        "buttons": [
+            {"title": "전체 뉴스 보기", "link": {"web_url": page_url, "mobile_web_url": page_url}}
+        ],
+    }
+    resp = requests.post(
+        "https://kapi.kakao.com/v2/api/talk/memo/default/send",
+        headers={"Authorization": f"Bearer {token}"},
+        data={"template_object": json.dumps(template_object, ensure_ascii=False)},
         timeout=30,
     )
     resp.raise_for_status()
@@ -165,10 +216,17 @@ def main() -> None:
 
     prompt = build_prompt(korea, japan, time_slot, date_str)
     data = call_gemini(prompt)
-    digest = render_digest(data)
 
-    print(digest)
-    send_to_line(digest)
+    print(render_digest(data))
+
+    os.makedirs("docs", exist_ok=True)
+    with open("docs/index.html", "w", encoding="utf-8") as f:
+        f.write(render_html(data))
+
+    counts = count_importance(data)
+    page_url = os.environ["PAGE_BASE_URL"].rstrip("/") + "/"
+    teaser = f"🔴 주요 {counts['red']}건 · 🟠 중요 {counts['orange']}건 · ⚪ 일반 {counts['white']}건 도착"
+    send_kakao(f"📰 {time_slot} 뉴스 요약 · {date_str}", teaser, page_url)
 
 
 if __name__ == "__main__":
