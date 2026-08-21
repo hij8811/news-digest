@@ -203,14 +203,19 @@ def get_kakao_access_token() -> str:
     return resp.json()["access_token"]
 
 
-def top_headlines(data: dict, limit: int) -> list[str]:
+def truncate(text: str, max_len: int) -> str:
+    return text if len(text) <= max_len else text[: max_len - 1].rstrip() + "…"
+
+
+def top_headlines(data: dict, limit: int, max_len: int = 22) -> list[str]:
     picked = []
     for order in ("red", "orange", "white"):
         for source in (data.get("korea", {}), data.get("japan", {})):
             for items in source.values():
                 for item in items:
                     if item.get("importance") == order:
-                        picked.append(f"{ICONS.get(order, '⚪')} {item.get('headline', '').strip()}")
+                        headline = truncate(item.get("headline", "").strip(), max_len)
+                        picked.append(f"{ICONS.get(order, '⚪')} {headline}")
         if len(picked) >= limit:
             break
     return picked[:limit]
@@ -262,8 +267,8 @@ def main() -> None:
     page_url = base_url
     image_url = base_url + "banner.png"
 
-    counts_line = f"🔴 주요 {counts['red']}건 · 🟠 중요 {counts['orange']}건 · ⚪ 일반 {counts['white']}건"
-    description = "\n".join([counts_line, *top_headlines(data, 3)])
+    counts_line = f"🔴 주요 {counts['red']} · 🟠 중요 {counts['orange']} · ⚪ 일반 {counts['white']}"
+    description = "\n".join([counts_line, *top_headlines(data, 2)])
 
     kakao_token = get_kakao_access_token()
     send_kakao(kakao_token, f"📰 {time_slot} 뉴스 요약 · {date_str}", description, image_url, page_url)
