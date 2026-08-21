@@ -203,12 +203,28 @@ def get_kakao_access_token() -> str:
     return resp.json()["access_token"]
 
 
-def send_kakao(token: str, title: str, description: str, page_url: str) -> None:
+def top_headlines(data: dict, limit: int) -> list[str]:
+    picked = []
+    for order in ("red", "orange", "white"):
+        for source in (data.get("korea", {}), data.get("japan", {})):
+            for items in source.values():
+                for item in items:
+                    if item.get("importance") == order:
+                        picked.append(f"{ICONS.get(order, '⚪')} {item.get('headline', '').strip()}")
+        if len(picked) >= limit:
+            break
+    return picked[:limit]
+
+
+def send_kakao(token: str, title: str, description: str, image_url: str, page_url: str) -> None:
     template_object = {
         "object_type": "feed",
         "content": {
             "title": title,
             "description": description,
+            "image_url": image_url,
+            "image_width": 1200,
+            "image_height": 630,
             "link": {"web_url": page_url, "mobile_web_url": page_url},
         },
         "buttons": [
@@ -242,11 +258,15 @@ def main() -> None:
         f.write(render_html(data))
 
     counts = count_importance(data)
-    page_url = os.environ["PAGE_BASE_URL"].rstrip("/") + "/"
-    teaser = f"🔴 주요 {counts['red']}건 · 🟠 중요 {counts['orange']}건 · ⚪ 일반 {counts['white']}건 도착"
+    base_url = os.environ["PAGE_BASE_URL"].rstrip("/") + "/"
+    page_url = base_url
+    image_url = base_url + "banner.png"
+
+    counts_line = f"🔴 주요 {counts['red']}건 · 🟠 중요 {counts['orange']}건 · ⚪ 일반 {counts['white']}건"
+    description = "\n".join([counts_line, *top_headlines(data, 3)])
 
     kakao_token = get_kakao_access_token()
-    send_kakao(kakao_token, f"📰 {time_slot} 뉴스 요약 · {date_str}", teaser, page_url)
+    send_kakao(kakao_token, f"📰 {time_slot} 뉴스 요약 · {date_str}", description, image_url, page_url)
 
 
 if __name__ == "__main__":
