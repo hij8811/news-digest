@@ -11,6 +11,7 @@ import json
 import os
 import smtplib
 import sys
+import time
 from datetime import datetime
 from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
@@ -18,6 +19,7 @@ from zoneinfo import ZoneInfo
 import feedparser
 import requests
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 KST = ZoneInfo("Asia/Seoul")
@@ -87,12 +89,23 @@ def build_prompt(korea: dict, japan: dict, time_slot: str, date_str: str) -> str
 
 def call_gemini(prompt: str) -> dict:
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
-    )
-    return json.loads(response.text)
+    # The free tier returns 503 "high demand" fairly often; ride it out with backoff
+    # rather than failing the whole run over a transient overload.
+    retry_delays = [15, 30, 60, 120]
+    for attempt, delay in enumerate([0] + retry_delays):
+        if delay:
+            print(f"Gemini overloaded, retrying in {delay}s...", file=sys.stderr)
+            time.sleep(delay)
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            return json.loads(response.text)
+        except genai_errors.ServerError:
+            if attempt == len(retry_delays):
+                raise
 
 
 ICONS = {"red": "🔴", "orange": "🟠", "white": "⚪"}
