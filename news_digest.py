@@ -215,6 +215,8 @@ def get_kakao_access_token() -> str:
         },
         timeout=30,
     )
+    if not resp.ok:
+        print(f"Kakao token refresh failed ({resp.status_code}): {resp.text}", file=sys.stderr)
     resp.raise_for_status()
     return resp.json()["access_token"]
 
