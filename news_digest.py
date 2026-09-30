@@ -1,9 +1,8 @@
 """Fetch Korea (Newsis) + Japan (NHK) headlines, rank them with Gemini, publish a digest
-page to GitHub Pages, and send it as a KakaoTalk "memo to self" teaser + a full email.
+page to GitHub Pages, and email the full digest.
 
 Run twice a day via GitHub Actions (see .github/workflows/news-digest.yml).
-Requires env vars: GEMINI_API_KEY, KAKAO_CLIENT_ID, KAKAO_CLIENT_SECRET,
-KAKAO_REFRESH_TOKEN, PAGE_BASE_URL, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
+Requires env vars: GEMINI_API_KEY, PAGE_BASE_URL, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
 Optional: DIGEST_RECIPIENT (defaults to GMAIL_ADDRESS)
 """
 import html
@@ -17,7 +16,6 @@ from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
 import feedparser
-import requests
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
@@ -167,7 +165,7 @@ def render_html_category(name: str, items: list[dict]) -> str:
     return f'<h3>{html.escape(name)}</h3><ul>{"".join(rows)}</ul>'
 
 
-def render_html(data: dict) -> str:
+def render_html(data: dict, page_url: str) -> str:
     counts = count_importance(data)
     sections = []
     for label, source_key in (("🇰🇷 한국 (뉴시스)", "korea"), ("🇯🇵 일본 (NHK)", "japan")):
@@ -178,6 +176,7 @@ def render_html(data: dict) -> str:
         )
         sections.append(f'<section><h2>{label}</h2>{cats_html}</section>')
 
+    page_url_html = html.escape(page_url, quote=True)
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
 <title>{html.escape(data['time_slot'])} 뉴스 요약 · {html.escape(data['date'])}</title>
@@ -193,74 +192,14 @@ li {{ padding: 8px 0; border-bottom: 1px solid #f0f0f0; }}
 .headline a:hover {{ text-decoration: underline; }}
 .context {{ color: #666; font-size: 0.9rem; margin-top: 2px; padding-left: 1.4rem; }}
 .summary {{ color: #666; font-size: 0.95rem; }}
+.page-link {{ color: #888; font-size: 0.85rem; margin-top: 2.5rem; }}
 </style></head>
 <body>
 <h1>📰 {html.escape(data['time_slot'])} 뉴스 요약 · {html.escape(data['date'])}</h1>
 <p class="summary">🔴 주요 {counts['red']}건 · 🟠 중요 {counts['orange']}건 · ⚪ 일반 {counts['white']}건</p>
 {"".join(sections)}
+<p class="page-link"><a href="{page_url_html}">웹에서 보기</a></p>
 </body></html>"""
-
-
-def get_kakao_access_token() -> str:
-    # Kakao access tokens only last ~6h, so mint a fresh one each run from the
-    # long-lived (~60 day) refresh token instead of storing a static token.
-    resp = requests.post(
-        "https://kauth.kakao.com/oauth/token",
-        headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
-        data={
-            "grant_type": "refresh_token",
-            "client_id": os.environ["KAKAO_CLIENT_ID"],
-            "client_secret": os.environ["KAKAO_CLIENT_SECRET"],
-            "refresh_token": os.environ["KAKAO_REFRESH_TOKEN"],
-        },
-        timeout=30,
-    )
-    if not resp.ok:
-        print(f"Kakao token refresh failed ({resp.status_code}): {resp.text}", file=sys.stderr)
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-def truncate(text: str, max_len: int) -> str:
-    return text if len(text) <= max_len else text[: max_len - 1].rstrip() + "…"
-
-
-def top_headlines(data: dict, limit: int, max_len: int = 22) -> list[str]:
-    picked = []
-    for order in ("red", "orange", "white"):
-        for source in (data.get("korea", {}), data.get("japan", {})):
-            for items in source.values():
-                for item in items:
-                    if item.get("importance") == order:
-                        headline = truncate(item.get("headline", "").strip(), max_len)
-                        picked.append(f"{ICONS.get(order, '⚪')} {headline}")
-        if len(picked) >= limit:
-            break
-    return picked[:limit]
-
-
-def send_kakao(token: str, title: str, description: str, image_url: str, page_url: str) -> None:
-    template_object = {
-        "object_type": "feed",
-        "content": {
-            "title": title,
-            "description": description,
-            "image_url": image_url,
-            "image_width": 1200,
-            "image_height": 630,
-            "link": {"web_url": page_url, "mobile_web_url": page_url},
-        },
-        "buttons": [
-            {"title": "전체 뉴스 보기", "link": {"web_url": page_url, "mobile_web_url": page_url}}
-        ],
-    }
-    resp = requests.post(
-        "https://kapi.kakao.com/v2/api/talk/memo/default/send",
-        headers={"Authorization": f"Bearer {token}"},
-        data={"template_object": json.dumps(template_object, ensure_ascii=False)},
-        timeout=30,
-    )
-    resp.raise_for_status()
 
 
 def send_email(subject: str, html_body: str) -> None:
@@ -293,21 +232,12 @@ def main() -> None:
 
     print(render_digest(data))
 
-    html_page = render_html(data)
+    page_url = os.environ["PAGE_BASE_URL"].rstrip("/") + "/"
+    html_page = render_html(data, page_url)
     os.makedirs("docs", exist_ok=True)
     with open("docs/index.html", "w", encoding="utf-8") as f:
         f.write(html_page)
 
-    counts = count_importance(data)
-    base_url = os.environ["PAGE_BASE_URL"].rstrip("/") + "/"
-    page_url = base_url
-    image_url = base_url + "banner.png"
-
-    counts_line = f"🔴 주요 {counts['red']} · 🟠 중요 {counts['orange']} · ⚪ 일반 {counts['white']}"
-    description = "\n".join([counts_line, *top_headlines(data, 2)])
-
-    kakao_token = get_kakao_access_token()
-    send_kakao(kakao_token, f"📰 {time_slot} 뉴스 요약 · {date_str}", description, image_url, page_url)
     send_email(f"📰 {time_slot} 뉴스 요약 · {date_str}", html_page)
 
 

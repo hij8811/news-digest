@@ -26,9 +26,6 @@ jobs:
       - name: Run digest
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          KAKAO_CLIENT_ID: ${{ secrets.KAKAO_CLIENT_ID }}
-          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
-          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
           PAGE_BASE_URL: ${{ vars.PAGE_BASE_URL }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
