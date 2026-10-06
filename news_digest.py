@@ -36,6 +36,15 @@ JAPAN_FEEDS = {
     "국제": "https://www.nhk.or.jp/rss/news/cat6.xml",
 }
 ITEMS_PER_CATEGORY = 6
+# Best quality first; unknown/retired ids just 404 and get skipped.
+GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+]
 
 
 def fetch_items(feed_url: str, limit: int) -> list[dict]:
@@ -87,23 +96,37 @@ def build_prompt(korea: dict, japan: dict, time_slot: str, date_str: str) -> str
 
 def call_gemini(prompt: str) -> dict:
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    # The free tier returns 503 "high demand" fairly often; ride it out with backoff
-    # rather than failing the whole run over a transient overload.
-    retry_delays = [15, 30, 60, 120]
-    for attempt, delay in enumerate([0] + retry_delays):
-        if delay:
-            print(f"Gemini overloaded, retrying in {delay}s...", file=sys.stderr)
-            time.sleep(delay)
-        try:
-            response = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
-            )
-            return json.loads(response.text)
-        except genai_errors.ServerError:
-            if attempt == len(retry_delays):
+    # A single free-tier model can stay at 503 "high demand" for many minutes, so
+    # waiting on it alone isn't enough: walk down the model list (each has its own
+    # capacity), and only if every model is busy sleep and sweep the list again.
+    last_exc: Exception | None = None
+    for round_no in range(3):
+        if round_no:
+            wait = 60 * round_no
+            print(f"All Gemini models busy, sweeping again in {wait}s...", file=sys.stderr)
+            time.sleep(wait)
+        for model in GEMINI_MODELS:
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(response_mime_type="application/json"),
+                )
+                data = json.loads(response.text)
+                print(f"Gemini model used: {model}", file=sys.stderr)
+                return data
+            except genai_errors.APIError as exc:
+                # 5xx = overloaded, 429 = quota for this model, 404 = model id retired/unknown
+                if exc.code in (404, 429) or (exc.code is not None and exc.code >= 500):
+                    print(f"{model} unavailable ({exc.code}), trying next model", file=sys.stderr)
+                    last_exc = exc
+                    continue
                 raise
+            except json.JSONDecodeError as exc:
+                print(f"{model} returned malformed JSON, trying next model", file=sys.stderr)
+                last_exc = exc
+    assert last_exc is not None
+    raise last_exc
 
 
 ICONS = {"red": "🔴", "orange": "🟠", "white": "⚪"}
